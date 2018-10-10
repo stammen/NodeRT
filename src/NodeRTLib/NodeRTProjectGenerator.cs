@@ -18,6 +18,8 @@ using System.Collections.Generic;
 using System.Text;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using Microsoft.VisualStudio.Setup.Configuration;
 
 namespace NodeRTLib
 {
@@ -41,6 +43,7 @@ namespace NodeRTLib
         private WinVersions _winVersion;
         private VsVersions _vsVersion;
         private bool _isGenerateDef;
+        private const int REGDB_E_CLASSNOTREG = unchecked((int)0x80040154);
 
         public NodeRTProjectGenerator(WinVersions winVersion, VsVersions vsVersion, bool isGenerateDef)
         {
@@ -214,10 +217,27 @@ namespace NodeRTLib
                 // we want the "10.0.17134.0" portion
                 var winVer = new DirectoryInfo(winmdDirectory).Name;
 
+                var vs2017Path = GetVS2017InstallationPath();
+                string platformWinmdPath = "";
+                if(vs2017Path.Length > 0)
+                {
+                    platformWinmdPath = vs2017Path + @"\Common7\IDE\VC\vcpackages";
+                    platformWinmdPath = platformWinmdPath.Replace(@"\", "/");
+                    var paths = platformWinmdPath.Split('/').ToList();
+                    if (paths.Any())
+                    {
+                        paths.RemoveAt(0); // remove c:
+                        paths.RemoveAt(0); // remove Program Files
+                    }
+                    platformWinmdPath = string.Join("/", paths);
+                }
+
                 var additionalPaths = new[]
                 {
+                    "%ProgramFiles%/" + platformWinmdPath,
                     "%ProgramFiles%/Windows Kits/10/UnionMetadata/" + winVer,
                     "%ProgramFiles%/Windows Kits/10/Include/" + winVer + "/um",
+                    "%ProgramFiles(x86)%/"+ platformWinmdPath,
                     "%ProgramFiles(x86)%/Windows Kits/10/UnionMetadata/" + winVer,
                     "%ProgramFiles(x86)%/Windows Kits/10/Include/" + winVer + "/um",
                 }.Select(p => "\"" + p + "\"").Aggregate((current, next) => current + ",\n              " + next);
@@ -229,6 +249,42 @@ namespace NodeRTLib
             {
                 bindingFileText.Replace("{UseAdditionalWinmd}", "false");
             }
+        }
+
+        private string GetVS2017InstallationPath()
+        {
+            try
+            {
+                var query = new SetupConfiguration();
+                var query2 = (ISetupConfiguration2)query;
+                var e = query2.EnumAllInstances();
+                var helper = (ISetupHelper)query;
+
+                int fetched;
+                var instances = new ISetupInstance[1];
+                e.Next(1, instances, out fetched);
+                if (fetched > 0)
+                {
+                    var instance2 = (ISetupInstance2)instances[0];
+                    var state = instance2.GetState();
+                    if ((state & InstanceState.Local) == InstanceState.Local)
+                    {
+                        return instance2.GetInstallationPath();
+                    }
+                }
+            }
+            catch (COMException ex) when (ex.HResult == REGDB_E_CLASSNOTREG)
+            {
+                // The query API is not registered. Assuming no instances are installed
+                return "";
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error 0x{ex.HResult:x8}: {ex.Message}");
+                return "";
+            }
+
+            return null;
         }
 
         private void CopyAndGenerateJsPackageFiles(string destinationFolder, string winRTNamespace, string projectName, string npmPackageVersion, string npmScope, string winVersion, string vsVersion, dynamic mainModel)
